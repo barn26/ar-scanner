@@ -1,6 +1,6 @@
 {
-  "name": "AR Object Scanner",
-  "short_name": "AR Scanner",
+  "name": "Bars AR Vision",
+  "short_name": "BarsAR",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#000000",
