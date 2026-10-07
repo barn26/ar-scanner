@@ -1,6 +1,6 @@
 self.addEventListener('install', (e) => {
   e.waitUntil(
-    caches.open('ar-scanner-v1').then((cache) => {
+    caches.open('bars-ar-v2').then((cache) => {
       return cache.addAll(['./index.html', './manifest.json']);
     })
   );
