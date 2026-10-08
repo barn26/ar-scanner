@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bars AR Vision</title>
+    <title>Bars AR Ruler</title>
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#007AFF">
     <style>
@@ -11,233 +11,161 @@
             margin: 0; padding: 0; width: 100%; height: 100%;
             overflow: hidden; background: #000; font-family: sans-serif;
         }
-        #loader {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: #111; color: #fff; display: flex; flex-direction: column;
-            justify-content: center; align-items: center; z-index: 100; font-size: 18px;
+        #info {
+            position: absolute; top: 10px; width: 100%; text-align: center;
+            color: white; font-size: 16px; z-index: 10; text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+            pointer-events: none;
         }
-        video, canvas {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover;
-        }
-        canvas { z-index: 10; pointer-events: none; }
         #ui {
             position: absolute; bottom: 30px; width: 100%; text-align: center; z-index: 20;
-            display: flex; justify-content: center; gap: 10px;
+            display: flex; justify-content: center; gap: 15px;
         }
         .btn {
-            background: #007AFF; color: white; border: none; padding: 12px 20px;
-            font-size: 15px; border-radius: 12px; cursor: pointer; box-shadow: 0 4px 15px rgba(0,122,255,0.4);
+            background: #007AFF; color: white; border: none; padding: 14px 24px;
+            font-size: 16px; border-radius: 14px; cursor: pointer; box-shadow: 0 4px 15px rgba(0,122,255,0.5);
             font-weight: bold;
         }
         .btn-danger { background: #FF3B30; }
-        #modal {
-            display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            background: white; padding: 25px; border-radius: 16px; z-index: 300; width: 80%; max-width: 320px;
-            box-shadow: 0 15px 35px rgba(0,0,0,0.6); color: #333;
-        }
-        #modal input {
-            width: 100%; padding: 10px; margin: 8px 0 20px 0; box-sizing: border-box;
-            border: 1px solid #ccc; border-radius: 8px; font-size: 16px;
-        }
     </style>
 </head>
 <body>
 
-    <div id="loader">
-        <h2>Завантаження системи...</h2>
-        <p id="loadStatus">Ініціалізація камери</p>
-    </div>
-
-    <video id="video" autoplay playsinline muted></video>
-    <canvas id="canvas"></canvas>
-
+    <div id="info">Натисніть «Запустити AR», наведіть на підлогу та торкайтеся для вимірювання</div>
+    
     <div id="ui">
-        <button class="btn" onclick="openTrainingMode()">➕ Навчити об'єкт</button>
-        <button class="btn btn-danger" onclick="clearMemory()">🗑️ Очистити базу</button>
+        <!-- Кнопка запуску WebXR AR з'явиться тут або викликатиметься через Three.js -->
     </div>
 
-    <div id="modal">
-        <h3>Новий об'єкт</h3>
-        <label>Назва:</label>
-        <input type="text" id="objName" placeholder="Наприклад, Коробка">
-        <label>Реальна висота (см):</label>
-        <input type="number" id="objHeight" placeholder="Наприклад, 40">
-        <button class="btn" style="width:100%;" onclick="saveTrainedObject()">Зберегти в базу</button>
-    </div>
-
-    <canvas id="processingCanvas" style="display:none;"></canvas>
+    <!-- Підключаємо Three.js та ARButton -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/webxr/ARButton.js"></script>
 
     <script>
-        let video = document.getElementById('video');
-        let canvas = document.getElementById('canvas');
-        let ctx = canvas.getContext('2d');
-        
-        let procCanvas = document.getElementById('processingCanvas');
-        let procCtx = procCanvas.getContext('2d');
+        let container;
+        let camera, scene, renderer;
+        let controller;
 
-        let isReady = false;
-        let trainingMode = false;
-        
-        let trainedObjects = JSON.parse(localStorage.getItem('ar_objects_v4') || '[]');
+        let reticle;
+        let hitTestSource = null;
+        let hitTestSourceRequested = false;
 
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('sw.js').catch(err => console.log(err));
-        }
+        let points = [];
+        let lineMesh = null;
 
-        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
-            .then(stream => {
-                video.srcObject = stream;
-                video.play();
-                document.getElementById('loader').style.display = 'none';
-                isReady = true;
-                requestAnimationFrame(processVideo);
-            })
-            .catch(err => {
-                document.getElementById('loadStatus').innerText = "Помилка камери: " + err.message;
+        init();
+        animate();
+
+        function init() {
+            container = document.createElement('div');
+            document.body.appendChild(container);
+
+            scene = new THREE.Scene();
+
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.xr.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            // Додаємо кнопку запуску AR у браузері
+            let arButton = ARButton.createButton(renderer, { 
+                requiredFeatures: ['hit-test'],
+                optionalFeatures: ['dom-overlay'],
+                domOverlay: { root: document.body }
             });
+            document.getElementById('ui').appendChild(arButton);
 
-        function openTrainingMode() {
-            trainingMode = true;
-            alert("Наведіть камеру на об'єкт і торкніться його центру на екрані!");
+            // Освітлення
+            const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
+            light.position.set(0.5, 1, 0.25);
+            scene.add(light);
+
+            // Контролер для тапу по екрану в AR
+            controller = renderer.xr.getController(0);
+            controller.addEventListener('select', onSelect);
+            scene.add(controller);
+
+            // Маркер поверхні (кільце, яке бігає по підлозі)
+            reticle = new THREE.Mesh(
+                new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
+                new THREE.MeshBasicMaterial({ color: 0x00FF00 })
+            );
+            reticle.matrixAutoUpdate = false;
+            reticle.visible = false;
+            scene.add(reticle);
+
+            window.addEventListener('resize', onWindowResize, false);
         }
 
-        window.addEventListener('click', (e) => {
-            if (!isReady) return;
-            if (trainingMode && e.target.tagName !== 'BUTTON' && e.target.tagName !== 'INPUT') {
-                let rect = canvas.getBoundingClientRect();
-                window.tapX = e.clientX - rect.left;
-                window.tapY = e.clientY - rect.top;
-                
-                // Робимо знімок області об'єкта (квадрат 100x100 пікселів навколо тапу)
-                procCanvas.width = 50; 
-                procCanvas.height = 50;
-                
-                let sourceX = Math.max(0, window.tapX - 25);
-                let sourceY = Math.max(0, window.tapY - 25);
-                
-                procCtx.drawImage(video, sourceX, sourceY, 50, 50, 0, 0, 50, 50);
-                window.capturedData = procCanvas.toDataURL('image/jpeg', 0.7);
+        // Дія при тапу на екран у режимі AR (ставимо точку)
+        function onSelect() {
+            if (reticle.visible) {
+                const position = new THREE.Vector3();
+                position.setFromMatrixPosition(reticle.matrix);
 
-                document.getElementById('modal').style.display = 'block';
-                trainingMode = false;
-            }
-        });
+                // Створюємо маленьку сферу-точку
+                const geometry = new THREE.SphereGeometry(0.02, 16, 16);
+                const material = new THREE.MeshBasicMaterial({ color: 0x00FF00 });
+                const sphere = new THREE.Mesh(geometry, material);
+                sphere.position.copy(position);
+                scene.add(sphere);
 
-        function saveTrainedObject() {
-            let name = document.getElementById('objName').value;
-            let height = parseFloat(document.getElementById('objHeight').value);
+                points.push(position);
 
-            if (!name || !height) {
-                alert("Заповніть усі поля!");
-                return;
-            }
-
-            // Додаємо в накопичувальну базу з паттерном зображення
-            trainedObjects.push({
-                id: Date.now(),
-                name: name,
-                height: height,
-                pattern: window.capturedData
-            });
-
-            localStorage.setItem('ar_objects_v4', JSON.stringify(trainedObjects));
-            document.getElementById('modal').style.display = 'none';
-            document.getElementById('objName').value = '';
-            document.getElementById('objHeight').value = '';
-            alert(`Об'єкт "${name}" збережено в базу!`);
-        }
-
-        function clearMemory() {
-            if (confirm("Видалити всю збережену базу об'єктів?")) {
-                localStorage.removeItem('ar_objects_v4');
-                trainedObjects = [];
-                alert("Базу очищено!");
+                // Якщо є дві точки, рахуємо відстань між ними у метрах / сантиметрах
+                if (points.length === 2) {
+                    const distance = points[0].distanceTo(points[1]);
+                    alert(`Виміряна відстань: ${(distance * 100).toFixed(1)} см`);
+                    
+                    // Скидаємо для наступного виміру
+                    points = [];
+                }
             }
         }
 
-        // Функція порівняння двох зображень (простий аналіз пікселів)
-        function compareImages(img1Data, img2Data, callback) {
-            let img1 = new Image();
-            img1.src = img1Data;
-            img1.onload = () => {
-                let img2 = new Image();
-                img2.src = img2Data;
-                img2.onload = () => {
-                    procCanvas.width = 50; procCanvas.height = 50;
-                    procCtx.drawImage(img1, 0, 0, 50, 50);
-                    let p1 = procCtx.getImageData(0, 0, 50, 50).data;
-
-                    procCtx.clearRect(0, 0, 50, 50);
-                    procCtx.drawImage(img2, 0, 0, 50, 50);
-                    let p2 = procCtx.getImageData(0, 0, 50, 50).data;
-
-                    let diff = 0;
-                    for (let i = 0; i < p1.length; i += 4) {
-                        let rDiff = Math.abs(p1[i] - p2[i]);
-                        let gDiff = Math.abs(p1[i+1] - p2[i+1]);
-                        let bDiff = Math.abs(p1[i+2] - p2[i+2]);
-                        diff += (rDiff + gDiff + bDiff) / 3;
-                    }
-                    let avgDiff = diff / (p1.length / 4);
-                    // Чим менша різниця, тим вища схожість (поріг 65)
-                    callback(avgDiff < 65);
-                };
-            };
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
-        let lastCheckTime = 0;
-        let detectedObjects = []; // Список об'єктів, які знайдено на поточному кадрі
+        function animate() {
+            renderer.setAnimationLoop(render);
+        }
 
-        function processVideo() {
-            if (!isReady) return;
+        function render(timestamp, frame) {
+            if (frame) {
+                const referenceSpace = renderer.xr.getReferenceSpace();
+                const session = renderer.xr.getSession();
 
-            canvas.width = video.videoWidth || window.innerWidth;
-            canvas.height = video.videoHeight || window.innerHeight;
-
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-            let now = Date.now();
-            // Робимо перевірку кожні 500мс, щоб не перевантажувати процесор телефона
-            if (now - lastCheckTime > 500 && trainedObjects.length > 0) {
-                lastCheckTime = now;
-                detectedObjects = [];
-
-                // Скануємо кілька зон екрана на наявність збережених об'єктів
-                trainedObjects.forEach(obj => {
-                    procCanvas.width = 50; procCanvas.height = 50;
-                    // Вирізаємо центральну область екрана для перевірки
-                    let checkX = canvas.width / 2 - 25;
-                    let checkY = canvas.height / 2 - 25;
-                    procCtx.drawImage(video, checkX, checkY, 50, 50, 0, 0, 50, 50);
-                    let currentSnap = procCanvas.toDataURL('image/jpeg', 0.7);
-
-                    compareImages(obj.pattern, currentSnap, (isMatch) => {
-                        if (isMatch) {
-                            detectedObjects.push(obj);
-                        }
+                if (!hitTestSourceRequested) {
+                    session.requestReferenceSpace('viewer').then((referenceSpace) => {
+                        session.requestHitTestSource({ space: referenceSpace }).then((source) => {
+                            hitTestSource = source;
+                        });
                     });
-                });
+                    session.end.then(() => {
+                        hitTestSourceRequested = false;
+                        hitTestSource = null;
+                    });
+                    hitTestSourceRequested = true;
+                }
+
+                if (hitTestSource) {
+                    const hitTestResults = frame.getHitTestResults(hitTestSource);
+                    if (hitTestResults.length > 0) {
+                        const hit = hitTestResults[0];
+                        reticle.visible = true;
+                        reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
+                    } else {
+                        reticle.visible = false;
+                    }
+                }
             }
 
-            // Якщо на екрані нікого немає — малюємо пустоту (очищено). 
-            // Якщо об'єкт знайдено в поле зору — виводимо його назву і відстань.
-            detectedObjects.forEach(obj => {
-                let posX = canvas.width / 2;
-                let posY = canvas.height / 2;
-
-                ctx.strokeStyle = '#00FF00';
-                ctx.lineWidth = 4;
-                ctx.strokeRect(posX - 60, posY - 60, 120, 120);
-
-                ctx.fillStyle = '#00FF00';
-                ctx.font = 'bold 20px Arial';
-                ctx.fillText(`✨ ${obj.name}`, posX - 60, posY - 70);
-                
-                let distance = (obj.height * 550) / 120; 
-                ctx.fillText(`Відстань: ~${(distance/100).toFixed(1)} м`, posX - 60, posY + 85);
-            });
-
-            requestAnimationFrame(processVideo);
+            renderer.render(scene, camera);
         }
     </script>
 </body>
