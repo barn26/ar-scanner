@@ -52,27 +52,33 @@
     <canvas id="canvas"></canvas>
 
     <div id="ui">
-        <button class="btn" onclick="openTrainingMode()">➕ Навчити</button>
-        <button class="btn btn-danger" onclick="clearMemory()">🗑️ Скинути мітки</button>
+        <button class="btn" onclick="openTrainingMode()">➕ Навчити об'єкт</button>
+        <button class="btn btn-danger" onclick="clearMemory()">🗑️ Очистити базу</button>
     </div>
 
     <div id="modal">
         <h3>Новий об'єкт</h3>
         <label>Назва:</label>
-        <input type="text" id="objName" placeholder="Наприклад, Ящик">
+        <input type="text" id="objName" placeholder="Наприклад, Коробка">
         <label>Реальна висота (см):</label>
         <input type="number" id="objHeight" placeholder="Наприклад, 40">
-        <button class="btn" style="width:100%;" onclick="saveTrainedObject()">Зберегти</button>
+        <button class="btn" style="width:100%;" onclick="saveTrainedObject()">Зберегти в базу</button>
     </div>
+
+    <canvas id="processingCanvas" style="display:none;"></canvas>
 
     <script>
         let video = document.getElementById('video');
         let canvas = document.getElementById('canvas');
         let ctx = canvas.getContext('2d');
+        
+        let procCanvas = document.getElementById('processingCanvas');
+        let procCtx = procCanvas.getContext('2d');
+
         let isReady = false;
         let trainingMode = false;
         
-        let trainedObjects = JSON.parse(localStorage.getItem('ar_objects_v2') || '[]');
+        let trainedObjects = JSON.parse(localStorage.getItem('ar_objects_v4') || '[]');
 
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('sw.js').catch(err => console.log(err));
@@ -92,7 +98,7 @@
 
         function openTrainingMode() {
             trainingMode = true;
-            alert("Торкніться центру об'єкта на екрані!");
+            alert("Наведіть камеру на об'єкт і торкніться його центру на екрані!");
         }
 
         window.addEventListener('click', (e) => {
@@ -102,6 +108,16 @@
                 window.tapX = e.clientX - rect.left;
                 window.tapY = e.clientY - rect.top;
                 
+                // Робимо знімок області об'єкта (квадрат 100x100 пікселів навколо тапу)
+                procCanvas.width = 50; 
+                procCanvas.height = 50;
+                
+                let sourceX = Math.max(0, window.tapX - 25);
+                let sourceY = Math.max(0, window.tapY - 25);
+                
+                procCtx.drawImage(video, sourceX, sourceY, 50, 50, 0, 0, 50, 50);
+                window.capturedData = procCanvas.toDataURL('image/jpeg', 0.7);
+
                 document.getElementById('modal').style.display = 'block';
                 trainingMode = false;
             }
@@ -116,28 +132,61 @@
                 return;
             }
 
-            // Зберігаємо унікальну мітку центру екрана або точки тапу
-            trainedObjects = [{ // Зберігаємо поки по одному об'єкту для тесту фокусування
+            // Додаємо в накопичувальну базу з паттерном зображення
+            trainedObjects.push({
                 id: Date.now(),
                 name: name,
                 height: height,
-                x: window.tapX,
-                y: window.tapY
-            }];
+                pattern: window.capturedData
+            });
 
-            localStorage.setItem('ar_objects_v2', JSON.stringify(trainedObjects));
+            localStorage.setItem('ar_objects_v4', JSON.stringify(trainedObjects));
             document.getElementById('modal').style.display = 'none';
             document.getElementById('objName').value = '';
             document.getElementById('objHeight').value = '';
-            alert("Об'єкт збережено!");
+            alert(`Об'єкт "${name}" збережено в базу!`);
         }
 
         function clearMemory() {
-            localStorage.removeItem('ar_objects_v2');
-            trainedObjects = [];
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            alert("Пам'ять очищено!");
+            if (confirm("Видалити всю збережену базу об'єктів?")) {
+                localStorage.removeItem('ar_objects_v4');
+                trainedObjects = [];
+                alert("Базу очищено!");
+            }
         }
+
+        // Функція порівняння двох зображень (простий аналіз пікселів)
+        function compareImages(img1Data, img2Data, callback) {
+            let img1 = new Image();
+            img1.src = img1Data;
+            img1.onload = () => {
+                let img2 = new Image();
+                img2.src = img2Data;
+                img2.onload = () => {
+                    procCanvas.width = 50; procCanvas.height = 50;
+                    procCtx.drawImage(img1, 0, 0, 50, 50);
+                    let p1 = procCtx.getImageData(0, 0, 50, 50).data;
+
+                    procCtx.clearRect(0, 0, 50, 50);
+                    procCtx.drawImage(img2, 0, 0, 50, 50);
+                    let p2 = procCtx.getImageData(0, 0, 50, 50).data;
+
+                    let diff = 0;
+                    for (let i = 0; i < p1.length; i += 4) {
+                        let rDiff = Math.abs(p1[i] - p2[i]);
+                        let gDiff = Math.abs(p1[i+1] - p2[i+1]);
+                        let bDiff = Math.abs(p1[i+2] - p2[i+2]);
+                        diff += (rDiff + gDiff + bDiff) / 3;
+                    }
+                    let avgDiff = diff / (p1.length / 4);
+                    // Чим менша різниця, тим вища схожість (поріг 65)
+                    callback(avgDiff < 65);
+                };
+            };
+        }
+
+        let lastCheckTime = 0;
+        let detectedObjects = []; // Список об'єктів, які знайдено на поточному кадрі
 
         function processVideo() {
             if (!isReady) return;
@@ -147,18 +196,45 @@
 
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            trainedObjects.forEach(obj => {
-                // Малюємо рамку фіксовано в зоні тапу (у майбутньому тут буде прив'язка до комп. зору)
+            let now = Date.now();
+            // Робимо перевірку кожні 500мс, щоб не перевантажувати процесор телефона
+            if (now - lastCheckTime > 500 && trainedObjects.length > 0) {
+                lastCheckTime = now;
+                detectedObjects = [];
+
+                // Скануємо кілька зон екрана на наявність збережених об'єктів
+                trainedObjects.forEach(obj => {
+                    procCanvas.width = 50; procCanvas.height = 50;
+                    // Вирізаємо центральну область екрана для перевірки
+                    let checkX = canvas.width / 2 - 25;
+                    let checkY = canvas.height / 2 - 25;
+                    procCtx.drawImage(video, checkX, checkY, 50, 50, 0, 0, 50, 50);
+                    let currentSnap = procCanvas.toDataURL('image/jpeg', 0.7);
+
+                    compareImages(obj.pattern, currentSnap, (isMatch) => {
+                        if (isMatch) {
+                            detectedObjects.push(obj);
+                        }
+                    });
+                });
+            }
+
+            // Якщо на екрані нікого немає — малюємо пустоту (очищено). 
+            // Якщо об'єкт знайдено в поле зору — виводимо його назву і відстань.
+            detectedObjects.forEach(obj => {
+                let posX = canvas.width / 2;
+                let posY = canvas.height / 2;
+
                 ctx.strokeStyle = '#00FF00';
                 ctx.lineWidth = 4;
-                ctx.strokeRect(obj.x - 50, obj.y - 50, 100, 100);
+                ctx.strokeRect(posX - 60, posY - 60, 120, 120);
 
                 ctx.fillStyle = '#00FF00';
-                ctx.font = 'bold 18px Arial';
-                ctx.fillText(`📌 ${obj.name}`, obj.x - 50, obj.y - 60);
+                ctx.font = 'bold 20px Arial';
+                ctx.fillText(`✨ ${obj.name}`, posX - 60, posY - 70);
                 
-                let distance = (obj.height * 550) / 100; 
-                ctx.fillText(`Відстань: ~${(distance/100).toFixed(1)} м`, obj.x - 50, obj.y + 70);
+                let distance = (obj.height * 550) / 120; 
+                ctx.fillText(`Відстань: ~${(distance/100).toFixed(1)} м`, posX - 60, posY + 85);
             });
 
             requestAnimationFrame(processVideo);
