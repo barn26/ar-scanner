@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AR Object Scanner</title>
-    <!-- Підключення маніфесту для PWA -->
+    <title>Bars AR Vision</title>
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#007AFF">
     <style>
@@ -23,12 +22,14 @@
         canvas { z-index: 10; pointer-events: none; }
         #ui {
             position: absolute; bottom: 30px; width: 100%; text-align: center; z-index: 20;
+            display: flex; justify-content: center; gap: 10px;
         }
         .btn {
-            background: #007AFF; color: white; border: none; padding: 14px 28px;
-            font-size: 16px; border-radius: 12px; cursor: pointer; box-shadow: 0 4px 15px rgba(0,122,255,0.4);
+            background: #007AFF; color: white; border: none; padding: 12px 20px;
+            font-size: 15px; border-radius: 12px; cursor: pointer; box-shadow: 0 4px 15px rgba(0,122,255,0.4);
             font-weight: bold;
         }
+        .btn-danger { background: #FF3B30; }
         #modal {
             display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
             background: white; padding: 25px; border-radius: 16px; z-index: 300; width: 80%; max-width: 320px;
@@ -44,22 +45,23 @@
 
     <div id="loader">
         <h2>Завантаження системи...</h2>
-        <p id="loadStatus">Ініціалізація камери та середовища</p>
+        <p id="loadStatus">Ініціалізація камери</p>
     </div>
 
     <video id="video" autoplay playsinline muted></video>
     <canvas id="canvas"></canvas>
 
     <div id="ui">
-        <button class="btn" onclick="openTrainingMode()">➕ Навчити об'єкт (Тап)</button>
+        <button class="btn" onclick="openTrainingMode()">➕ Навчити</button>
+        <button class="btn btn-danger" onclick="clearMemory()">🗑️ Скинути мітки</button>
     </div>
 
     <div id="modal">
         <h3>Новий об'єкт</h3>
         <label>Назва:</label>
-        <input type="text" id="objName" placeholder="Наприклад, Коробка">
+        <input type="text" id="objName" placeholder="Наприклад, Ящик">
         <label>Реальна висота (см):</label>
-        <input type="number" id="objHeight" placeholder="Наприклад, 30">
+        <input type="number" id="objHeight" placeholder="Наприклад, 40">
         <button class="btn" style="width:100%;" onclick="saveTrainedObject()">Зберегти</button>
     </div>
 
@@ -70,16 +72,12 @@
         let isReady = false;
         let trainingMode = false;
         
-        let trainedObjects = JSON.parse(localStorage.getItem('ar_objects') || '[]');
+        let trainedObjects = JSON.parse(localStorage.getItem('ar_objects_v2') || '[]');
 
-        // Реєстрація Service Worker для PWA
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('sw.js')
-                .then(() => console.log("PWA Service Worker зареєстровано"))
-                .catch(err => console.log("Помилка SW: ", err));
+            navigator.serviceWorker.register('sw.js').catch(err => console.log(err));
         }
 
-        // Запуск камери
         navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
             .then(stream => {
                 video.srcObject = stream;
@@ -94,7 +92,7 @@
 
         function openTrainingMode() {
             trainingMode = true;
-            alert("Наведіть приціл на об'єкт і торкніться екрана в місці об'єкта!");
+            alert("Торкніться центру об'єкта на екрані!");
         }
 
         window.addEventListener('click', (e) => {
@@ -118,19 +116,27 @@
                 return;
             }
 
-            trainedObjects.push({
+            // Зберігаємо унікальну мітку центру екрана або точки тапу
+            trainedObjects = [{ // Зберігаємо поки по одному об'єкту для тесту фокусування
                 id: Date.now(),
                 name: name,
                 height: height,
                 x: window.tapX,
                 y: window.tapY
-            });
+            }];
 
-            localStorage.setItem('ar_objects', JSON.stringify(trainedObjects));
+            localStorage.setItem('ar_objects_v2', JSON.stringify(trainedObjects));
             document.getElementById('modal').style.display = 'none';
             document.getElementById('objName').value = '';
             document.getElementById('objHeight').value = '';
-            alert("Збережено!");
+            alert("Об'єкт збережено!");
+        }
+
+        function clearMemory() {
+            localStorage.removeItem('ar_objects_v2');
+            trainedObjects = [];
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            alert("Пам'ять очищено!");
         }
 
         function processVideo() {
@@ -142,16 +148,17 @@
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
             trainedObjects.forEach(obj => {
+                // Малюємо рамку фіксовано в зоні тапу (у майбутньому тут буде прив'язка до комп. зору)
                 ctx.strokeStyle = '#00FF00';
                 ctx.lineWidth = 4;
-                ctx.strokeRect(obj.x - 45, obj.y - 45, 90, 90);
+                ctx.strokeRect(obj.x - 50, obj.y - 50, 100, 100);
 
                 ctx.fillStyle = '#00FF00';
                 ctx.font = 'bold 18px Arial';
-                ctx.fillText(`📌 ${obj.name}`, obj.x - 45, obj.y - 55);
+                ctx.fillText(`📌 ${obj.name}`, obj.x - 50, obj.y - 60);
                 
-                let distance = (obj.height * 550) / 90; 
-                ctx.fillText(`Відстань: ~${(distance/100).toFixed(1)} м`, obj.x - 45, obj.y + 70);
+                let distance = (obj.height * 550) / 100; 
+                ctx.fillText(`Відстань: ~${(distance/100).toFixed(1)} м`, obj.x - 50, obj.y + 70);
             });
 
             requestAnimationFrame(processVideo);
